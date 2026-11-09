@@ -185,7 +185,7 @@ try {
 
     # --- phase B: marquee + z-order regression guards ----------------------
     # A single ASCII quote far wider than the 470 px resting width forces
-    # the scroll state machine (14 pt Microsoft YaHei UI puts this at ~950 px).
+    # the scroll state machine (11 pt Microsoft YaHei UI puts this at ~800 px).
     $longQuote = 'The quick brown fox jumps over the lazy dog 0123456789 ' +
                  'and keeps running far beyond the edge of the strip ABCDEF'
     Set-Content -Path $exported -Encoding Ascii -Value ('[{"quote":"' + $longQuote + '"}]')

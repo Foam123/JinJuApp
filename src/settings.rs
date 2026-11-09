@@ -18,17 +18,18 @@ pub const FILE_NAME: &str = "settings.json";
 /// Default face: Microsoft YaHei UI, the standard Simplified-Chinese UI
 /// face on Windows (GDI substitutes another face when it is absent).
 pub const DEFAULT_FACE: &str = "Microsoft YaHei UI";
-/// Default weight: 700 (bold) — Light 300 read as washed out at strip size,
-/// and the family ships only Light/Regular/Bold.
-pub const DEFAULT_WEIGHT: i32 = 700;
-/// Default size in points for the 45-logical-px strip.
-pub const DEFAULT_PT: i32 = 14;
-/// Default text colour, hex: the original `rgba(30, 30, 30, 0.85)` look.
-pub const DEFAULT_COLOR: &str = "#1E1E1E";
-/// Default text opacity.
-pub const DEFAULT_OPACITY: f64 = 0.85;
+/// Default weight: 400 (regular). Light 300 read as washed out at strip
+/// size; bold 700 was heavier than the taskbar's own text.
+pub const DEFAULT_WEIGHT: i32 = 400;
+/// Default size in points: matches the taskbar's own text height
+/// (16 px em at 96 DPI).
+pub const DEFAULT_PT: i32 = 11;
+/// Default text colour: the taskbar's text is pure black.
+pub const DEFAULT_COLOR: &str = "#000000";
+/// Default text opacity: fully opaque, like the taskbar's text.
+pub const DEFAULT_OPACITY: f64 = 1.0;
 /// `DEFAULT_COLOR` in RGB, kept in sync by a unit test.
-const DEFAULT_RGB: (u8, u8, u8) = (30, 30, 30);
+const DEFAULT_RGB: (u8, u8, u8) = (0, 0, 0);
 
 /// `LOGFONTW::lfFaceName` is `[u16; 32]`: 31 units plus the terminator.
 const MAX_FACE_UNITS: usize = 31;
@@ -232,19 +233,20 @@ mod tests {
     fn defaults_are_the_shipped_look() {
         let d = Settings::default();
         assert_eq!(d.font, DEFAULT_FACE);
-        assert_eq!(d.weight, 700);
-        assert_eq!(d.size, 14);
+        assert_eq!(d.weight, 400);
+        assert_eq!(d.size, 11);
         assert_eq!(d.color, DEFAULT_COLOR);
-        assert_eq!(d.opacity, DEFAULT_OPACITY);
+        assert_eq!(d.opacity, 1.0);
         assert_eq!(d.rgb(), DEFAULT_RGB);
-        assert_eq!(d.alpha(), 217);
+        assert_eq!(d.alpha(), 255);
     }
 
     #[test]
     fn parse_color_accepts_short_and_long_forms() {
         assert_eq!(parse_color("#000000"), Some((0, 0, 0)));
         assert_eq!(parse_color("#FFFFFF"), Some((255, 255, 255)));
-        assert_eq!(parse_color("#1E1E1E"), Some(DEFAULT_RGB));
+        assert_eq!(parse_color(DEFAULT_COLOR), Some(DEFAULT_RGB));
+        assert_eq!(parse_color("#1E1E1E"), Some((30, 30, 30)));
         assert_eq!(parse_color("#FFF"), Some((255, 255, 255)));
         assert_eq!(parse_color("#08f"), Some((0, 136, 255)));
         assert_eq!(parse_color("#ffff"), None, "4 digits are not a colour");

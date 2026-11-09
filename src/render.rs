@@ -501,8 +501,8 @@ mod tests {
         );
     }
 
-    /// Layer opacity modulates the accumulated ink end to end: at 0.5 the
-    /// solid-glyph alpha is scale(217, 128) = 109, not the full 217.
+    /// Layer opacity modulates the accumulated ink end to end: with the
+    /// opaque default, a half-alpha layer leaves roughly half the ink.
     #[test]
     fn draw_half_alpha_scales_ink() {
         let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
@@ -510,8 +510,8 @@ mod tests {
         let buf = s.bits_mut();
         let max_a = buf.iter().skip(3).step_by(4).copied().max().unwrap_or(0);
         assert!(
-            (100..=118).contains(&max_a),
-            "half-opacity layer must halve the ink alpha (got {max_a}; full opacity would be {MAX_ALPHA})"
+            (118..=136).contains(&max_a),
+            "half-opacity layer must halve the ink alpha (got {max_a}; full opacity is 255)"
         );
     }
 }
