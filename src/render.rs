@@ -1,12 +1,19 @@
 //! Text rendering into a per-pixel-alpha ARGB surface.
 //!
 //! Pipeline: GDI draws each text layer **white on black** into a 32-bpp
-//! top-down DIB (the red channel then carries per-pixel coverage —
-//! grayscale antialiasing, correct on alpha surfaces where ClearType is
-//! not), and [`accumulate_layer`] blends the mask, scaled by the layer's
-//! opacity, into a premultiplied ARGB frame that `UpdateLayeredWindow`
-//! expects. Two layers crossfade by simple addition. The blending is a
-//! pure function; the GDI half is a thin resource-owning host.
+//! top-down DIB, and [`accumulate_layer`] blends that mask, scaled by the
+//! layer's opacity, into a premultiplied ARGB frame that
+//! `UpdateLayeredWindow` expects. Two layers crossfade by simple addition.
+//!
+//! The mask is read as **luminance**, and the text is rasterised with
+//! ClearType: its subpixel hinting snaps stems to the pixel grid the way
+//! the taskbar's own text is drawn, and folding R/G/B back into one
+//! coverage value keeps the coloured fringes off a per-pixel-alpha
+//! surface. Plain grayscale antialiasing (what this used to use) leaves
+//! the same glyph about one pixel softer and fatter.
+//!
+//! The blending is a pure function; the GDI half is a thin resource-owning
+//! host.
 
 use crate::settings::Settings;
 use crate::win32::*;
@@ -31,7 +38,13 @@ pub fn accumulate_layer(
     let (mp, _) = mask.as_chunks::<4>();
     let (fp, _) = frame.as_chunks_mut::<4>();
     for (m, f) in mp.iter().zip(fp.iter_mut()) {
-        let a = scale(scale(max_alpha, m[2]), alpha_q);
+        // Luminance (0.299 R + 0.587 G + 0.114 B) of a white-on-black mask
+        // pixel: with ClearType the three channels differ per subpixel, and
+        // averaging them back is what turns the coloured rasterisation into
+        // a usable grayscale coverage value.
+        let cov =
+            ((u32::from(m[2]) * 77 + u32::from(m[1]) * 150 + u32::from(m[0]) * 29) >> 8) as u8;
+        let a = scale(scale(max_alpha, cov), alpha_q);
         f[0] = f[0].saturating_add(scale(color.2, a));
         f[1] = f[1].saturating_add(scale(color.1, a));
         f[2] = f[2].saturating_add(scale(color.0, a));
@@ -72,9 +85,9 @@ unsafe fn create_font(dpi: u32, style: &Settings) -> HFONT {
         // Negative height = character height; points → pixels at this DPI.
         lf.lfHeight = -MulDiv(style.size, dpi as i32, 72);
         lf.lfWeight = style.weight;
-        // Grayscale AA: ClearType assumes an opaque destination and would
-        // produce colored fringes on a per-pixel-alpha surface.
-        lf.lfQuality = ANTIALIASED_QUALITY;
+        // ClearType rasterisation, folded back to grayscale coverage by
+        // accumulate_layer: sharper stems, no coloured fringes on screen.
+        lf.lfQuality = CLEARTYPE_QUALITY;
         set_face_name(&mut lf, &style.font);
         CreateFontIndirectW(&lf)
     }
@@ -287,7 +300,7 @@ mod tests {
         // White solid: coverage 255. Premultiplied: rgb = color * alpha,
         // so 30 * 217/255 = 26 — the *displayed* color stays 30/255 at
         // 85% opacity, which is exactly what premultiplication means.
-        let mask = [0u8, 0, 255, 0];
+        let mask = [255u8, 255, 255, 0];
         let mut frame = [0u8; 4];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 255);
         let expected = [
@@ -302,7 +315,7 @@ mod tests {
 
     #[test]
     fn half_coverage_blends_by_coverage() {
-        let mask = [0u8, 0, 128, 0];
+        let mask = [128u8, 128, 128, 0];
         let mut frame = [0u8; 4];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 255);
         let a = scale(217, 128);
@@ -311,7 +324,7 @@ mod tests {
 
     #[test]
     fn full_opacity_max_alpha_is_255() {
-        let mask = [0u8, 0, 255, 0];
+        let mask = [255u8, 255, 255, 0];
         let mut frame = [0u8; 4];
         accumulate_layer(&mask, &mut frame, (10, 20, 30), 255, 255);
         assert_eq!(px(&frame), [30, 20, 10, 255]);
@@ -319,7 +332,7 @@ mod tests {
 
     #[test]
     fn layer_alpha_scales_opacity() {
-        let mask = [0u8, 0, 255, 0];
+        let mask = [255u8, 255, 255, 0];
         let mut frame = [0u8; 4];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 128);
         let a = scale(MAX_ALPHA, 128);
@@ -328,7 +341,7 @@ mod tests {
 
     #[test]
     fn zero_alpha_layer_is_invisible() {
-        let mask = [0u8, 0, 255, 0];
+        let mask = [255u8, 255, 255, 0];
         let mut frame = [0u8; 4];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 0);
         assert_eq!(frame, [0u8; 4]);
@@ -336,7 +349,7 @@ mod tests {
 
     #[test]
     fn two_layers_accumulate_with_saturation() {
-        let mask = [0u8, 0, 255, 0];
+        let mask = [255u8, 255, 255, 0];
         let mut frame = [0u8; 4];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 255);
         let once = px(&frame);
@@ -352,7 +365,7 @@ mod tests {
 
     #[test]
     fn trailing_partial_chunk_is_untouched() {
-        let mask = [0u8, 0, 255, 0, 9, 9];
+        let mask = [255u8, 255, 255, 0, 9, 9];
         let mut frame = [0u8, 0, 0, 0, 7, 7];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 255);
         assert_eq!(&frame[4..], &[7, 7]);
@@ -382,6 +395,23 @@ mod tests {
         set_face_name(&mut lf, &"X".repeat(40));
         assert_eq!(lf.lfFaceName[..31], [u16::from(b'X'); 31]);
         assert_eq!(lf.lfFaceName[31], 0, "the 32nd unit is reserved for NUL");
+    }
+
+    /// The mask is white-on-black rasterisation, but ClearType puts
+    /// different coverage in R, G and B; the blend must read luminance, not
+    /// one channel. A pure-red pixel carries 0.299 of full coverage.
+    #[test]
+    fn coverage_is_luminance_not_a_single_channel() {
+        let mut frame = [0u8; 4];
+        accumulate_layer(&[0, 0, 255, 0], &mut frame, (0, 0, 0), 255, 255);
+        let a = frame[3];
+        assert_eq!(
+            a, 76,
+            "red-only coverage must weigh 0.299 of full (got {a})"
+        );
+        let mut frame = [0u8; 4];
+        accumulate_layer(&[255, 255, 255, 0], &mut frame, (0, 0, 0), 255, 255);
+        assert_eq!(frame[3], 255, "white is full coverage");
     }
 
     #[test]

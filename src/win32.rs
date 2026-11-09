@@ -250,7 +250,7 @@ pub const DIB_RGB_COLORS: u32 = 0;
 pub const BI_RGB: u32 = 0;
 
 // GDI
-pub const ANTIALIASED_QUALITY: u8 = 4;
+pub const CLEARTYPE_QUALITY: u8 = 5;
 pub const DT_SINGLELINE: u32 = 0x20;
 pub const DT_VCENTER: u32 = 0x04;
 pub const DT_NOPREFIX: u32 = 0x0800;
