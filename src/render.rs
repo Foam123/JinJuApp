@@ -15,10 +15,11 @@ use crate::win32::*;
 pub const COLOR: (u8, u8, u8) = (30, 30, 30);
 pub const MAX_ALPHA: u8 = 217; // 0.85 * 255
 
-/// The strip's typeface: the standard Simplified-Chinese UI face, Regular
-/// weight. The previous build inherited the system message font at Light
+/// The strip's typeface: the standard Simplified-Chinese UI face at Bold
+/// (700) weight. Earlier builds inherited the system message font at Light
 /// (300) weight, whose hairline CJK strokes read as washed-out and blurry
-/// against a wallpaper at this size; Regular restores normal stroke weight.
+/// against a wallpaper at this size; the family has only Light, Regular and
+/// Bold faces, and Regular was still too thin, so the strip uses Bold.
 /// GDI substitutes a system face if this one is missing, so older or
 /// font-reduced installs still render.
 const FONT_FACE: &str = "Microsoft YaHei UI";
@@ -64,7 +65,7 @@ fn set_face_name(lf: &mut LOGFONTW, face: &str) {
     }
 }
 
-/// `FONT_FACE` at `FONT_PT` points for the given DPI, Regular weight.
+/// `FONT_FACE` at `FONT_PT` points for the given DPI, Bold weight.
 ///
 /// The charset and pitch still come from the system message font, so a
 /// non-Chinese locale keeps its own mapping when GDI substitutes a face;
@@ -86,7 +87,7 @@ unsafe fn create_font(dpi: u32) -> HFONT {
         };
         // Negative height = character height; points → pixels at this DPI.
         lf.lfHeight = -MulDiv(FONT_PT, dpi as i32, 72);
-        lf.lfWeight = FW_NORMAL;
+        lf.lfWeight = FW_BOLD;
         // Grayscale AA: ClearType assumes an opaque destination and would
         // produce colored fringes on a per-pixel-alpha surface.
         lf.lfQuality = ANTIALIASED_QUALITY;
