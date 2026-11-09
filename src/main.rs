@@ -12,6 +12,7 @@ mod geometry;
 mod layout;
 mod quotes;
 mod render;
+mod settings;
 mod startup;
 mod tray;
 mod win32;
@@ -20,6 +21,7 @@ use geometry::Rect;
 use layout::Scroll;
 use quotes::{Bag, Rng, Source};
 use render::Surface;
+use settings::Settings;
 use win32::*;
 
 // ---------------------------------------------------------------------------
@@ -106,14 +108,16 @@ struct App {
     /// Where the strip was last placed, so re-anchoring (which runs on
     /// every quote change) only moves the window when the target changed.
     placed: Option<(i32, i32)>,
+    /// Typeface settings from `settings.json`, reused when the DPI changes.
+    style: Settings,
     exe_path: String,
 }
 
 impl App {
-    fn new(hwnd: HWND, dpi: u32, quotes: Source, exe_path: String) -> Option<App> {
+    fn new(hwnd: HWND, dpi: u32, quotes: Source, style: Settings, exe_path: String) -> Option<App> {
         let win_w = scale_pt(WINDOW_W, dpi);
         let win_h = scale_pt(WINDOW_H, dpi);
-        let surface = Surface::new(win_w, win_h, dpi)?;
+        let surface = Surface::new(win_w, win_h, dpi, &style)?;
         let bag = Bag::new(quotes.lines().len());
         let speed_px_per_s = SCROLL_SPEED_LOGICAL * dpi as f32 / 96.0;
         Some(App {
@@ -132,6 +136,7 @@ impl App {
             last_presented_alpha: -1,
             transition: None,
             placed: None,
+            style,
             exe_path,
         })
     }
@@ -288,8 +293,12 @@ impl App {
 
     /// DPI changed (window moved between monitors): rebuild at new size.
     fn on_dpi_changed(&mut self, dpi: u32) {
-        let Some(surface) = Surface::new(scale_pt(WINDOW_W, dpi), scale_pt(WINDOW_H, dpi), dpi)
-        else {
+        let Some(surface) = Surface::new(
+            scale_pt(WINDOW_W, dpi),
+            scale_pt(WINDOW_H, dpi),
+            dpi,
+            &self.style,
+        ) else {
             return;
         };
         self.surface = surface;
@@ -570,13 +579,22 @@ fn main() {
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let quotes = quotes::load(&exe_dir);
-    if let Some(reason) = quotes.note().filter(|_| !cli.quiet) {
-        alert(
-            core::ptr::null_mut(),
-            &format!(
+    let (style, style_note) = settings::load(&exe_dir);
+    if !cli.quiet {
+        // One dialog for every startup problem: the user fixes the files in
+        // one pass instead of restarting once per message box.
+        let mut problems: Vec<String> = Vec::new();
+        if let Some(reason) = quotes.note() {
+            problems.push(format!(
                 "{reason}\n\n本次运行使用内置金句。修正该文件后重启应用即可。\n文件格式：[{{\"quote\": \"…\"}}, …]"
-            ),
-        );
+            ));
+        }
+        if let Some(reason) = style_note {
+            problems.push(reason);
+        }
+        if !problems.is_empty() {
+            alert(core::ptr::null_mut(), &problems.join("\n\n"));
+        }
     }
 
     unsafe {
@@ -605,7 +623,7 @@ fn main() {
         TASKBAR_CREATED.get_or_init(|| RegisterWindowMessageW(widez("TaskbarCreated").as_ptr()));
 
         let dpi = primary_dpi();
-        let app = match App::new(core::ptr::null_mut(), dpi, quotes, exe.clone()) {
+        let app = match App::new(core::ptr::null_mut(), dpi, quotes, style, exe.clone()) {
             Some(a) => a,
             None => {
                 alert(core::ptr::null_mut(), "初始化渲染表面失败");

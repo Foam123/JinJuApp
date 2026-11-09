@@ -105,6 +105,14 @@ try {
     Check 'exported corpus matches repo corpus' {
         (Get-FileHash $exported).Hash -eq (Get-FileHash (Join-Path $repo 'quotes.json')).Hash
     }
+    # 2b. display settings: exported with the defaults so the typeface knobs
+    # are discoverable - regression guard for "no way to change the font".
+    $settingsFile = Join-Path $dir 'settings.json'
+    Check 'settings.json exported on first run' { Test-Path $settingsFile }
+    Check 'exported settings expose the typeface knobs' {
+        $text = Get-Content $settingsFile -Raw
+        ($text -match '"font"') -and ($text -match '"weight"') -and ($text -match '"size"')
+    }
 
     # 3. window exists and is visible
     # (title passed explicitly: PowerShell marshals $null as "" not as a

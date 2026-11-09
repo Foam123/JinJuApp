@@ -8,24 +8,13 @@
 //! expects. Two layers crossfade by simple addition. The blending is a
 //! pure function; the GDI half is a thin resource-owning host.
 
+use crate::settings::Settings;
 use crate::win32::*;
 
 /// Text color and maximum opacity, matching the original app's
 /// `rgba(30, 30, 30, 0.85)`.
 pub const COLOR: (u8, u8, u8) = (30, 30, 30);
 pub const MAX_ALPHA: u8 = 217; // 0.85 * 255
-
-/// The strip's typeface: the standard Simplified-Chinese UI face at Bold
-/// (700) weight. Earlier builds inherited the system message font at Light
-/// (300) weight, whose hairline CJK strokes read as washed-out and blurry
-/// against a wallpaper at this size; the family has only Light, Regular and
-/// Bold faces, and Regular was still too thin, so the strip uses Bold.
-/// GDI substitutes a system face if this one is missing, so older or
-/// font-reduced installs still render.
-const FONT_FACE: &str = "Microsoft YaHei UI";
-/// Font size in points. The strip is 45 logical px tall, so 14 pt fills
-/// it comfortably (13 pt looked cramped next to the 14 px system UI text).
-const FONT_PT: i32 = 14;
 
 fn scale(c: u8, a: u8) -> u8 {
     ((u32::from(c) * u32::from(a) + 127) / 255) as u8
@@ -65,12 +54,12 @@ fn set_face_name(lf: &mut LOGFONTW, face: &str) {
     }
 }
 
-/// `FONT_FACE` at `FONT_PT` points for the given DPI, Bold weight.
+/// The configured face at its weight and point size, for the given DPI.
 ///
 /// The charset and pitch still come from the system message font, so a
 /// non-Chinese locale keeps its own mapping when GDI substitutes a face;
-/// only the face, weight and size are ours.
-unsafe fn create_font(dpi: u32) -> HFONT {
+/// only the face, weight and size come from `settings.json`.
+unsafe fn create_font(dpi: u32, style: &Settings) -> HFONT {
     unsafe {
         let mut ncm: NONCLIENTMETRICSW = core::mem::zeroed();
         ncm.cbSize = core::mem::size_of::<NONCLIENTMETRICSW>() as u32;
@@ -86,12 +75,12 @@ unsafe fn create_font(dpi: u32) -> HFONT {
             core::mem::zeroed()
         };
         // Negative height = character height; points → pixels at this DPI.
-        lf.lfHeight = -MulDiv(FONT_PT, dpi as i32, 72);
-        lf.lfWeight = FW_BOLD;
+        lf.lfHeight = -MulDiv(style.size, dpi as i32, 72);
+        lf.lfWeight = style.weight;
         // Grayscale AA: ClearType assumes an opaque destination and would
         // produce colored fringes on a per-pixel-alpha surface.
         lf.lfQuality = ANTIALIASED_QUALITY;
-        set_face_name(&mut lf, FONT_FACE);
+        set_face_name(&mut lf, &style.font);
         CreateFontIndirectW(&lf)
     }
 }
@@ -110,8 +99,9 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// Create a surface of `width` × `height` px at `dpi`.
-    pub fn new(width: i32, height: i32, dpi: u32) -> Option<Surface> {
+    /// Create a surface of `width` × `height` px at `dpi`, drawing with
+    /// the typeface described by `style`.
+    pub fn new(width: i32, height: i32, dpi: u32, style: &Settings) -> Option<Surface> {
         if width <= 0 || height <= 0 {
             return None;
         }
@@ -147,7 +137,7 @@ impl Surface {
                 return None;
             }
             let old_bmp = SelectObject(hdc, hbmp);
-            let font = create_font(dpi);
+            let font = create_font(dpi, style);
             let old_font = SelectObject(hdc, font);
             Some(Surface {
                 width,
@@ -273,6 +263,7 @@ impl Drop for Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings;
 
     fn px(b: &[u8]) -> [u8; 4] {
         [b[0], b[1], b[2], b[3]]
@@ -365,16 +356,16 @@ mod tests {
     #[test]
     fn face_name_is_utf16_and_nul_terminated() {
         let mut lf: LOGFONTW = unsafe { core::mem::zeroed() };
-        set_face_name(&mut lf, FONT_FACE);
+        set_face_name(&mut lf, settings::DEFAULT_FACE);
         let units: Vec<u16> = lf
             .lfFaceName
             .iter()
             .copied()
             .take_while(|&u| u != 0)
             .collect();
-        assert_eq!(String::from_utf16(&units).unwrap(), FONT_FACE);
+        assert_eq!(String::from_utf16(&units).unwrap(), settings::DEFAULT_FACE);
         assert_eq!(
-            lf.lfFaceName[FONT_FACE.len()],
+            lf.lfFaceName[settings::DEFAULT_FACE.len()],
             0,
             "terminated right after the face"
         );
@@ -404,7 +395,7 @@ mod tests {
     /// strip's right edge, where the tail arrives during the slide.
     #[test]
     fn draw_renders_tail_when_origin_is_negative() {
-        let mut s = Surface::new(500, 36, 96).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
         // ~120 ASCII chars ≈ 800 px wide at 13 pt — far wider than 500.
         let text = "The quick brown fox jumps over the lazy dog and keeps \
                     running far beyond the edge of the strip ABCDEFGHIJKL \
@@ -433,7 +424,7 @@ mod tests {
     /// test hard-coding any one font's pixel metrics.
     #[test]
     fn measure_cjk_long_quote_overflows_strip() {
-        let s = Surface::new(500, 36, 96).expect("GDI surface");
+        let s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
         let q = "翻山越岭只为一场遇见，全力以赴只为一次改变。答案就在眼泪里，\
                  也凝结在汗水中、感官和心灵。";
         let ascii = "abcdefghijklmnopqrstuvwxyz0123456789abcdefgh";
@@ -453,7 +444,7 @@ mod tests {
     /// The symmetric half: with the origin at rest the head is visible.
     #[test]
     fn draw_renders_head_at_rest() {
-        let mut s = Surface::new(500, 36, 96).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
         s.draw(&[("金句", 15, 1.0)]);
         let (w, h) = (s.width as usize, s.height as usize);
         let buf = s.bits_mut();
@@ -471,7 +462,7 @@ mod tests {
     /// Two layers at different positions and opacities must both leave ink.
     #[test]
     fn draw_blends_two_layers() {
-        let mut s = Surface::new(500, 36, 96).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
         s.draw(&[("金句", 15, 0.5), ("金句", 200, 0.5)]);
         let (w, h) = (s.width as usize, s.height as usize);
         let buf = s.bits_mut();
@@ -496,7 +487,7 @@ mod tests {
     /// A layer with zero alpha is a complete no-op.
     #[test]
     fn draw_zero_alpha_leaves_no_ink() {
-        let mut s = Surface::new(500, 36, 96).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
         s.draw(&[("金句", 15, 0.0)]);
         let buf = s.bits_mut();
         assert!(
@@ -509,7 +500,7 @@ mod tests {
     /// solid-glyph alpha is scale(217, 128) = 109, not the full 217.
     #[test]
     fn draw_half_alpha_scales_ink() {
-        let mut s = Surface::new(500, 36, 96).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
         s.draw(&[("金句", 15, 0.5)]);
         let buf = s.bits_mut();
         let max_a = buf.iter().skip(3).step_by(4).copied().max().unwrap_or(0);
