@@ -18,7 +18,7 @@ function Check([string]$name, [scriptblock]$assert) {
 
 Add-Type -Namespace Native -Name User32 -MemberDefinition '
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
-[StructLayout(LayoutKind.Sequential)] public struct APPBARDATA { public int cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public IntPtr lParam; }
+
 [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
 [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
 [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
@@ -28,7 +28,6 @@ Add-Type -Namespace Native -Name User32 -MemberDefinition '
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
-[DllImport("shell32.dll")] public static extern IntPtr SHAppBarMessage(uint m, ref APPBARDATA d);
 [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern IntPtr GetTopWindow(IntPtr hWnd);
@@ -114,17 +113,11 @@ try {
     Check 'window class JinJuApp exists' { $hwnd -ne [IntPtr]::Zero }
     Check 'window is visible' { [Native.User32]::IsWindowVisible($hwnd) }
 
-    # 3b. position: the strip is anchored to the bottom-right corner of the
-    # monitor work area, so it clears the taskbar whatever edge the bar is
-    # docked to - regression guard for "the strip covers my taskbar icons".
+    # 3b. position: for a bottom-docked bar the strip is drawn inside the
+    # taskbar band, vertically centred and ending at the notification area's
+    # left edge; other layouts float it in the desktop's bottom-right corner.
     $wr = New-Object Native.User32+RECT
     [Native.User32]::GetWindowRect($hwnd, [ref]$wr) | Out-Null
-    $abd = New-Object Native.User32+APPBARDATA
-    $abd.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][Native.User32+APPBARDATA])
-    [Native.User32]::SHAppBarMessage(5, [ref]$abd) | Out-Null  # ABM_GETTASKBARPOS
-    $abdState = New-Object Native.User32+APPBARDATA
-    $abdState.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][Native.User32+APPBARDATA])
-    $barState = [Native.User32]::SHAppBarMessage(4, [ref]$abdState)  # ABM_GETSTATE
     $mi = New-Object Native.User32+MONITORINFO
     $mi.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][Native.User32+MONITORINFO])
     $pt = New-Object Native.User32+POINT
@@ -133,30 +126,35 @@ try {
     # The notification area (chevron, tray icons, clock) is the right limit
     # when it lives in a bottom band; otherwise the work area's edge is.
     $limit = $mi.rcWork.right
+    $bandTop = $mi.rcWork.bottom
+    $bandH = $mi.rcMonitor.bottom - $bandTop
+    $inBand = $false
     $trayWnd = [Native.User32]::FindWindowW('Shell_TrayWnd', [NullString]::Value)
     if ($trayWnd -ne [IntPtr]::Zero) {
         $notify = [Native.User32]::FindWindowExW($trayWnd, [IntPtr]::Zero, 'TrayNotifyWnd', [NullString]::Value)
         if ($notify -ne [IntPtr]::Zero) {
             $nr = New-Object Native.User32+RECT
             [Native.User32]::GetWindowRect($notify, [ref]$nr) | Out-Null
-            if ((($nr.top + 1) -ge $mi.rcWork.bottom) -and ($nr.left -gt $mi.rcWork.left)) { $limit = $nr.left }
+            if ((($nr.top + 1) -ge $bandTop) -and ($nr.left -gt $mi.rcWork.left)) {
+                $limit = $nr.left
+                $inBand = ($bandH -gt 0)
+            }
         }
     }
-    Check 'strip stops left of the notification area' {
-        ([Math]::Abs($wr.right - ($limit - $margin)) -le 2) -and
-        ([Math]::Abs($wr.bottom - ($mi.rcWork.bottom - $margin)) -le 2)
+    Check 'strip ends left of the notification area' {
+        [Math]::Abs($wr.right - ($limit - $margin)) -le 2
     }
-    if (($barState -band 1) -eq 0) {
-        # Not auto-hidden: the bar owns a reserved band, so the strip must
-        # stay entirely outside that rectangle.
-        Check 'strip never overlaps the taskbar' {
-            ($wr.left -ge $abd.rc.right) -or ($wr.right -le $abd.rc.left) -or
-            ($wr.top -ge $abd.rc.bottom) -or ($wr.bottom -le $abd.rc.top)
+    if ($inBand) {
+        $winH = $wr.bottom - $wr.top
+        $expTop = $bandTop + [Math]::Floor(($bandH - $winH) / 2)
+        Check 'strip sits inside the bottom taskbar band' {
+            ([Math]::Abs($wr.top - $expTop) -le 2) -and ($wr.bottom -le $mi.rcMonitor.bottom)
         }
     } else {
-        Write-Output "SKIP : taskbar is auto-hidden; overlap check not applicable"
+        Check 'strip floats above the bar in the desktop corner' {
+            [Math]::Abs($wr.bottom - ($mi.rcWork.bottom - $margin)) -le 2
+        }
     }
-
     # 4. autostart is opt-in: running the app must not create or modify
     # the Run entry without the explicit tray-menu toggle. Compare against
     # the snapshot so a developer's real entry makes this pass, not fail.

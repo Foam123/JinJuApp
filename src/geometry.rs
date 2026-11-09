@@ -30,17 +30,19 @@ impl Rect {
     }
 }
 
-/// Place the strip's bottom-right corner inside `work`, stopping short of
-/// the notification area when the bar owns a bottom band.
+/// Place the strip inside the bottom taskbar band, left of the
+/// notification area; everywhere else, in the bottom-right of the desktop.
 ///
 /// `work` is the monitor's work area — the desktop minus whatever the
-/// taskbar reserves, whichever edge the bar is docked to — so the strip can
-/// never cover the bar itself. `tray` is the shell's notification-area
-/// container (`TrayNotifyWnd`); when it sits in a bottom band its left edge
-/// becomes the strip's right limit, so the quote ends before the clock, the
-/// IME indicator and the hidden-icon chevron instead of hanging over them.
-/// A vertical bar's tray has no bottom band and is ignored, as is a hidden
-/// bar's (the work area then covers the whole screen).
+/// taskbar reserves, whichever edge the bar is docked to. `tray` is the
+/// shell's notification-area container (`TrayNotifyWnd`). When the bar is
+/// bottom-docked (the work area stops above it) and the tray lives in that
+/// band, the strip is drawn **inside the band**, vertically centred, ending
+/// at the tray's left edge — it reads as one line of the taskbar itself and
+/// never overlaps the chevron, tray icons or clock. Any other layout
+/// (top/side-docked or auto-hidden bar) keeps the strip floating in the
+/// desktop's bottom-right corner, where the band either does not exist or
+/// is not visible.
 pub fn place(
     work: &Rect,
     monitor: &Rect,
@@ -56,16 +58,26 @@ pub fn place(
         // than drawing the strip at a negative coordinate.
         monitor
     };
-    let right = match tray {
-        Some(t) if t.top + 1 >= area.bottom && t.left > area.left => t.left,
-        _ => area.right,
+    // Bottom band: the slot the bar reserves between the work area and the
+    // bottom edge of the monitor.
+    let band = (area.bottom < monitor.bottom).then_some(Rect {
+        left: monitor.left,
+        top: area.bottom,
+        right: monitor.right,
+        bottom: monitor.bottom,
+    });
+    let tray_in_band = match tray {
+        Some(t) if t.top + 1 >= area.bottom && t.left > area.left => Some(t),
+        _ => None,
     };
-    Rect::new(
-        (right - margin - win_w).max(area.left + margin),
-        area.bottom - margin - win_h,
-        win_w,
-        win_h,
-    )
+    let x_limit = tray_in_band.map_or(area.right, |t| t.left);
+    let x = (x_limit - margin - win_w).max(area.left + margin);
+    let y = match (band, tray_in_band) {
+        (Some(b), Some(_)) if b.height() >= win_h => b.top + (b.height() - win_h) / 2,
+        (Some(b), Some(_)) => b.top, // band shorter than the strip: top-align
+        _ => area.bottom - margin - win_h,
+    };
+    Rect::new(x, y, win_w, win_h)
 }
 
 // ---------------------------------------------------------------------------
@@ -84,8 +96,8 @@ mod tests {
     };
     const MARGIN: i32 = 10;
 
-    /// Bottom-docked bar: the work area ends above it, and the notification
-    /// area (chevron, tray icons, clock) starts at 3526.
+    /// Bottom-docked bar (48 px): the work area ends above it, and the
+    /// notification area (chevron, tray icons, clock) starts at 3526.
     const BOTTOM_WORK: Rect = Rect {
         left: 0,
         top: 0,
@@ -100,17 +112,20 @@ mod tests {
     };
 
     #[test]
-    fn strip_stops_left_of_the_notification_area() {
+    fn strip_is_drawn_inside_the_band_and_left_of_the_tray() {
         let r = place(&BOTTOM_WORK, &MON, Some(BOTTOM_TRAY), 500, 45, MARGIN);
-        assert_eq!(r, Rect::new(3016, 1497, 500, 45));
-        assert!(r.right < BOTTOM_TRAY.left, "never hangs over the tray");
-        assert!(r.bottom <= BOTTOM_WORK.bottom, "never sits on the bar");
+        // Band 1552..1600 is 48 px tall, the strip is 45: centred at 1553.
+        assert_eq!(r, Rect::new(3016, 1553, 500, 45));
+        assert!(r.top >= BOTTOM_WORK.bottom, "inside the bar band");
+        assert!(r.bottom <= MON.bottom);
+        assert!(r.right < BOTTOM_TRAY.left, "never over the tray");
     }
 
     #[test]
-    fn missing_notification_area_falls_back_to_the_work_edge() {
+    fn missing_notification_area_floats_above_the_bar() {
         let r = place(&BOTTOM_WORK, &MON, None, 500, 45, MARGIN);
         assert_eq!(r, Rect::new(3330, 1497, 500, 45));
+        assert!(r.bottom <= BOTTOM_WORK.bottom, "clear of the bar");
     }
 
     #[test]
@@ -134,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn top_docked_bar_tray_is_ignored() {
+    fn top_docked_bar_keeps_the_strip_on_the_desktop() {
         let mon = Rect {
             left: 0,
             top: 0,
@@ -161,7 +176,7 @@ mod tests {
     #[test]
     fn hidden_bar_leaves_the_screen_edge_available() {
         // Auto-hidden bar: the work area covers the whole screen, and the
-        // tray is not in a bottom band.
+        // tray is not in a reserved bottom band.
         let mon = Rect {
             left: 0,
             top: 0,
@@ -194,13 +209,13 @@ mod tests {
     fn narrow_desktop_clamps_to_the_left_edge() {
         // A tray so close to the left edge that the strip would overflow:
         // the strip stops at the left margin instead of going negative.
-        let work = Rect {
+        let mon = Rect {
             left: 0,
             top: 0,
             right: 600,
-            bottom: 800,
+            bottom: 848,
         };
-        let mon = Rect {
+        let work = Rect {
             left: 0,
             top: 0,
             right: 600,
@@ -214,6 +229,33 @@ mod tests {
         };
         let r = place(&work, &mon, Some(tray), 500, 45, MARGIN);
         assert_eq!(r.left, MARGIN, "clamped to the left margin, not negative");
+    }
+
+    #[test]
+    fn band_shorter_than_the_strip_top_aligns() {
+        // A 30 px band cannot centre a 45 px strip: keep the top edge on
+        // the band's top so the text baseline stays readable.
+        let mon = Rect {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 772,
+        };
+        let work = Rect {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 742,
+        };
+        let tray = Rect {
+            left: 700,
+            top: 742,
+            right: 800,
+            bottom: 772,
+        };
+        let r = place(&work, &mon, Some(tray), 500, 45, MARGIN);
+        assert_eq!(r.top, 742);
+        assert_eq!(r.right, 690, "still stops left of the tray");
     }
 
     #[test]
