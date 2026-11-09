@@ -111,7 +111,8 @@ try {
     Check 'settings.json exported on first run' { Test-Path $settingsFile }
     Check 'exported settings expose the typeface knobs' {
         $text = Get-Content $settingsFile -Raw
-        ($text -match '"font"') -and ($text -match '"weight"') -and ($text -match '"size"')
+        ($text -match '"font"') -and ($text -match '"weight"') -and ($text -match '"size"') -and
+        ($text -match '"color"') -and ($text -match '"opacity"')
     }
 
     # 3. window exists and is visible

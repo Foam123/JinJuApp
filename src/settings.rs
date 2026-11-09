@@ -23,6 +23,12 @@ pub const DEFAULT_FACE: &str = "Microsoft YaHei UI";
 pub const DEFAULT_WEIGHT: i32 = 700;
 /// Default size in points for the 45-logical-px strip.
 pub const DEFAULT_PT: i32 = 14;
+/// Default text colour, hex: the original `rgba(30, 30, 30, 0.85)` look.
+pub const DEFAULT_COLOR: &str = "#1E1E1E";
+/// Default text opacity.
+pub const DEFAULT_OPACITY: f64 = 0.85;
+/// `DEFAULT_COLOR` in RGB, kept in sync by a unit test.
+const DEFAULT_RGB: (u8, u8, u8) = (30, 30, 30);
 
 /// `LOGFONTW::lfFaceName` is `[u16; 32]`: 31 units plus the terminator.
 const MAX_FACE_UNITS: usize = 31;
@@ -32,7 +38,7 @@ const MIN_PT: i32 = 8;
 const MAX_PT: i32 = 48;
 
 /// Display settings as written in `settings.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Font face name as GDI knows it: `Microsoft YaHei UI`, `SimHei`,
@@ -42,6 +48,10 @@ pub struct Settings {
     pub weight: i32,
     /// Font size in points.
     pub size: i32,
+    /// Text colour: `#RGB` or `#RRGGBB`.
+    pub color: String,
+    /// Text opacity in `0.0..=1.0` (1.0 = fully opaque).
+    pub opacity: f64,
 }
 
 impl Default for Settings {
@@ -50,11 +60,24 @@ impl Default for Settings {
             font: DEFAULT_FACE.to_string(),
             weight: DEFAULT_WEIGHT,
             size: DEFAULT_PT,
+            color: DEFAULT_COLOR.to_string(),
+            opacity: DEFAULT_OPACITY,
         }
     }
 }
 
 impl Settings {
+    /// RGB triple for the configured colour (always valid after
+    /// [`sanitized`](Settings::sanitized)).
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        parse_color(&self.color).unwrap_or(DEFAULT_RGB)
+    }
+
+    /// Text opacity as the 0–255 alpha byte the blender uses.
+    pub fn alpha(&self) -> u8 {
+        (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
     /// Replace values the renderer cannot express, reporting what changed.
     pub fn sanitized(mut self) -> (Settings, Option<String>) {
         let mut problems: Vec<String> = Vec::new();
@@ -75,6 +98,20 @@ impl Settings {
             ));
             self.weight = DEFAULT_WEIGHT;
         }
+        let color = self.color.trim().to_string();
+        if parse_color(&color).is_none() {
+            problems.push(format!(
+                "color 需为 #RRGGBB 或 #RGB，收到 \"{}\"",
+                self.color
+            ));
+            self.color = DEFAULT_COLOR.to_string();
+        } else {
+            self.color = color;
+        }
+        if !(0.0..=1.0).contains(&self.opacity) {
+            problems.push(format!("opacity 需在 0.0–1.0 之间，收到 {}", self.opacity));
+            self.opacity = DEFAULT_OPACITY;
+        }
         if !(MIN_PT..=MAX_PT).contains(&self.size) {
             problems.push(format!(
                 "size 需在 {MIN_PT}–{MAX_PT} pt 之间，收到 {}",
@@ -89,6 +126,32 @@ impl Settings {
             )
         });
         (self, note)
+    }
+}
+
+/// Parse `#RGB` or `#RRGGBB` (the `#` is required). Pure.
+pub fn parse_color(text: &str) -> Option<(u8, u8, u8)> {
+    let hex = text.trim().strip_prefix('#')?;
+    let mut digits = [0u8; 6];
+    for (i, b) in hex.bytes().enumerate() {
+        if i >= 6 {
+            return None;
+        }
+        digits[i] = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        };
+    }
+    match hex.len() {
+        3 => Some((digits[0] * 17, digits[1] * 17, digits[2] * 17)),
+        6 => Some((
+            digits[0] * 16 + digits[1],
+            digits[2] * 16 + digits[3],
+            digits[4] * 16 + digits[5],
+        )),
+        _ => None,
     }
 }
 
@@ -171,6 +234,46 @@ mod tests {
         assert_eq!(d.font, DEFAULT_FACE);
         assert_eq!(d.weight, 700);
         assert_eq!(d.size, 14);
+        assert_eq!(d.color, DEFAULT_COLOR);
+        assert_eq!(d.opacity, DEFAULT_OPACITY);
+        assert_eq!(d.rgb(), DEFAULT_RGB);
+        assert_eq!(d.alpha(), 217);
+    }
+
+    #[test]
+    fn parse_color_accepts_short_and_long_forms() {
+        assert_eq!(parse_color("#000000"), Some((0, 0, 0)));
+        assert_eq!(parse_color("#FFFFFF"), Some((255, 255, 255)));
+        assert_eq!(parse_color("#1E1E1E"), Some(DEFAULT_RGB));
+        assert_eq!(parse_color("#FFF"), Some((255, 255, 255)));
+        assert_eq!(parse_color("#08f"), Some((0, 136, 255)));
+        assert_eq!(parse_color("#ffff"), None, "4 digits are not a colour");
+        assert_eq!(parse_color("1E1E1E"), None, "the # is required");
+        assert_eq!(parse_color("#GGGGGG"), None, "not hex");
+        assert_eq!(parse_color("#1234567"), None, "too long");
+    }
+
+    #[test]
+    fn sanitize_rejects_bad_color_and_opacity() {
+        let (s, note) = parse(r##"{"color":"#12345","opacity":1.5}"##)
+            .unwrap()
+            .sanitized();
+        assert_eq!(s.color, DEFAULT_COLOR);
+        assert_eq!(s.opacity, DEFAULT_OPACITY);
+        let note = note.expect("a note for bad values");
+        assert!(note.contains("color"), "{note}");
+        assert!(note.contains("opacity"), "{note}");
+    }
+
+    #[test]
+    fn sanitize_keeps_a_valid_opaque_black() {
+        // The "look like taskbar text" preset: one note-free sanitize.
+        let (s, note) = parse(r##"{"color":"#000","opacity":1.0}"##)
+            .unwrap()
+            .sanitized();
+        assert_eq!(s.rgb(), (0, 0, 0));
+        assert_eq!(s.alpha(), 255);
+        assert!(note.is_none());
     }
 
     #[test]
@@ -235,6 +338,8 @@ mod tests {
             font: "SimHei".to_string(),
             weight: 400,
             size: 13,
+            color: "#000000".to_string(),
+            opacity: 1.0,
         };
         assert_eq!(parse(&to_json(&s).unwrap()).unwrap(), s);
     }

@@ -11,11 +11,6 @@
 use crate::settings::Settings;
 use crate::win32::*;
 
-/// Text color and maximum opacity, matching the original app's
-/// `rgba(30, 30, 30, 0.85)`.
-pub const COLOR: (u8, u8, u8) = (30, 30, 30);
-pub const MAX_ALPHA: u8 = 217; // 0.85 * 255
-
 fn scale(c: u8, a: u8) -> u8 {
     ((u32::from(c) * u32::from(a) + 127) / 255) as u8
 }
@@ -94,6 +89,9 @@ pub struct Surface {
     bits: *mut u8,
     frame: Vec<u8>, // premultiplied accumulation buffer (w*h*4)
     font: HFONT,
+    /// Text colour and opacity, from `settings.json`.
+    color: (u8, u8, u8),
+    alpha: u8,
     old_bmp: HGDIOBJ,
     old_font: HGDIOBJ,
 }
@@ -147,6 +145,8 @@ impl Surface {
                 bits: bits as *mut u8,
                 frame: vec![0; (width as usize) * (height as usize) * 4],
                 font,
+                color: style.rgb(),
+                alpha: style.alpha(),
                 old_bmp,
                 old_font,
             })
@@ -221,7 +221,7 @@ impl Surface {
             // `bits` is a raw pointer field — reading it holds no borrow,
             // so the mask slice can coexist with `&mut self.frame`.
             let mask = unsafe { core::slice::from_raw_parts(self.bits, len) };
-            accumulate_layer(mask, &mut self.frame, COLOR, MAX_ALPHA, alpha_q);
+            accumulate_layer(mask, &mut self.frame, self.color, self.alpha, alpha_q);
         }
         // Copy the composed frame back into the DIB for ULW. Raw-pointer
         // copy: `bits_mut()` would take `&mut self` and clash with the
@@ -264,6 +264,11 @@ impl Drop for Surface {
 mod tests {
     use super::*;
     use crate::settings;
+
+    /// The shipped defaults, spelled out so the blend arithmetic reads at
+    /// each call site.
+    const COLOR: (u8, u8, u8) = (30, 30, 30);
+    const MAX_ALPHA: u8 = 217;
 
     fn px(b: &[u8]) -> [u8; 4] {
         [b[0], b[1], b[2], b[3]]
