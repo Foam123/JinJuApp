@@ -103,6 +103,9 @@ struct App {
     last_presented_alpha: i32,
     /// In-flight quote crossfade; `None` = no transition.
     transition: Option<Transition>,
+    /// Where the strip was last placed, so re-anchoring (which runs on
+    /// every quote change) only moves the window when the target changed.
+    placed: Option<(i32, i32)>,
     exe_path: String,
 }
 
@@ -128,6 +131,7 @@ impl App {
             last_presented_x: i32::MIN,
             last_presented_alpha: -1,
             transition: None,
+            placed: None,
             exe_path,
         })
     }
@@ -273,6 +277,10 @@ impl App {
             self.win_h,
             PLACE_MARGIN,
         );
+        if self.placed == Some((r.left, r.top)) {
+            return; // already there; the tray or DPI has not moved since
+        }
+        self.placed = Some((r.left, r.top));
         unsafe {
             MoveWindow(self.hwnd, r.left, r.top, self.win_w, self.win_h, 0);
         }
@@ -409,6 +417,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM
                         if IsWindowVisible(hwnd) == 0 {
                             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                         }
+                        // Follow the notification area: tray icons (and so
+                        // the chevron) move as apps hide and show them.
+                        app.reposition();
                         app.next_quote();
                     }
                     SCROLL_TIMER => app.tick_scroll(),
