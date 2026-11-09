@@ -16,7 +16,7 @@ mod startup;
 mod tray;
 mod win32;
 
-use geometry::{Edge, Rect};
+use geometry::Rect;
 use layout::Scroll;
 use quotes::{Bag, Rng, Source};
 use render::Surface;
@@ -253,26 +253,23 @@ impl App {
         }
     }
 
-    /// Move to the strip adjacent to the taskbar (any docked edge).
+    /// Move the strip to the bottom-right corner of the usable desktop.
+    ///
+    /// Anchored to the work area, so the taskbar — whatever edge it is
+    /// docked to — can never be covered, and the strip stays on the right
+    /// side where it does not collide with the bar's own left-hand icons.
     fn reposition(&mut self) {
-        let Some((taskbar, edge, monitor)) = desktop_geometry() else {
+        let Some((monitor, work)) = desktop_geometry() else {
             return;
         };
-        let r = geometry::place(
-            &taskbar,
-            &monitor,
-            edge,
-            self.win_w,
-            self.win_h,
-            PLACE_MARGIN,
-        );
+        let r = geometry::place(&work, &monitor, self.win_w, self.win_h, PLACE_MARGIN);
         unsafe {
             MoveWindow(self.hwnd, r.left, r.top, self.win_w, self.win_h, 0);
         }
     }
 
     /// DPI changed (window moved between monitors): rebuild at new size.
-    fn on_dpi_changed(&mut self, dpi: u32, suggested: &RECT) {
+    fn on_dpi_changed(&mut self, dpi: u32) {
         let Some(surface) = Surface::new(scale_pt(WINDOW_W, dpi), scale_pt(WINDOW_H, dpi), dpi)
         else {
             return;
@@ -286,17 +283,10 @@ impl App {
         self.scroll = Scroll::new(self.win_w, 0, SCROLL_SPEED_LOGICAL * dpi as f32 / 96.0);
         // An in-flight crossfade's cached geometry belongs to the old DPI.
         self.transition = None;
-        unsafe {
-            SetWindowPos(
-                self.hwnd,
-                core::ptr::null_mut(),
-                suggested.left,
-                suggested.top,
-                suggested.right - suggested.left,
-                suggested.bottom - suggested.top,
-                SWP_NOACTIVATE, // size already correct; follow the suggestion
-            );
-        }
+        // Re-anchor rather than trusting the suggested rect: the strip's
+        // position is derived from the work area, not from where Windows
+        // thinks this window belonged before the scale change.
+        self.reposition();
         self.refresh();
     }
 
@@ -318,54 +308,20 @@ fn scale_pt(v: i32, dpi: u32) -> i32 {
     ((i64::from(v) * i64::from(dpi) + 95) / 96) as i32
 }
 
-/// Taskbar rect + docked edge + primary monitor rect.
-fn desktop_geometry() -> Option<(Rect, Edge, Rect)> {
+/// Primary monitor rect + its work area (the desktop minus the taskbar).
+///
+/// The work area is the placement authority: Windows maintains it for every
+/// docked edge, so the strip can be anchored away from the bar without
+/// classifying the edge or trusting an appbar query.
+fn desktop_geometry() -> Option<(Rect, Rect)> {
     unsafe {
         let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut mi = MONITORINFO {
-            cbSize: core::mem::size_of::<MONITORINFO>() as u32,
-            rcMonitor: RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            rcWork: RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            dwFlags: 0,
-        };
+        let mut mi: MONITORINFO = core::mem::zeroed();
+        mi.cbSize = core::mem::size_of::<MONITORINFO>() as u32;
         if GetMonitorInfoW(monitor, &mut mi) == 0 {
             return None;
         }
-        let mon = Rect::from(mi.rcMonitor);
-        let mut abd = APPBARDATA {
-            cbSize: core::mem::size_of::<APPBARDATA>() as u32,
-            hWnd: core::ptr::null_mut(),
-            uCallbackMessage: 0,
-            uEdge: 0,
-            rc: RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            lParam: 0,
-        };
-        if SHAppBarMessage(ABM_GETTASKBARPOS, &mut abd) == 0 {
-            // No appbar answer: assume a bottom taskbar of typical height.
-            let tb = Rect::new(
-                mon.left,
-                mon.bottom - scale_pt(48, 96),
-                mon.width(),
-                scale_pt(48, 96),
-            );
-            return Some((tb, Edge::Bottom, mon));
-        }
-        Some((Rect::from(abd.rc), Edge::from_abe(abd.uEdge), mon))
+        Some((Rect::from(mi.rcMonitor), Rect::from(mi.rcWork)))
     }
 }
 
@@ -437,10 +393,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM
             WM_DPICHANGED => {
                 let Some(app) = app_of(hwnd) else { return 0 };
                 let dpi = ((wp >> 16) & 0xFFFF) as u32;
-                let suggested = lp as *const RECT;
-                if !suggested.is_null() {
-                    app.on_dpi_changed(dpi, &*suggested);
-                }
+                app.on_dpi_changed(dpi);
                 0
             }
             WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {

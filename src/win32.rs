@@ -143,17 +143,6 @@ pub struct MONITORINFO {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct APPBARDATA {
-    pub cbSize: DWORD,
-    pub hWnd: HWND,
-    pub uCallbackMessage: UINT,
-    pub uEdge: UINT,
-    pub rc: RECT,
-    pub lParam: LPARAM,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub struct GUID {
     pub Data1: u32,
     pub Data2: u16,
@@ -261,7 +250,7 @@ pub const DIB_RGB_COLORS: u32 = 0;
 pub const BI_RGB: u32 = 0;
 
 // GDI
-pub const FW_LIGHT: i32 = 300;
+pub const FW_NORMAL: i32 = 400;
 pub const ANTIALIASED_QUALITY: u8 = 4;
 pub const DT_SINGLELINE: u32 = 0x20;
 pub const DT_VCENTER: u32 = 0x04;
@@ -284,9 +273,6 @@ pub const MF_CHECKED: u32 = 0x0000_0008;
 pub const TPM_RIGHTBUTTON: u32 = 0x0000_0002;
 pub const TPM_BOTTOMALIGN: u32 = 0x0000_0020;
 pub const TPM_RETURNCMD: u32 = 0x0000_0100;
-
-// appbar
-pub const ABM_GETTASKBARPOS: u32 = 5;
 
 // misc
 pub const SPI_GETNONCLIENTMETRICS: u32 = 0x0029;
@@ -481,7 +467,6 @@ unsafe extern "system" {
         lpDirectory: *const u16,
         nShow: i32,
     ) -> HANDLE;
-    pub fn SHAppBarMessage(dwMessage: u32, pData: *mut APPBARDATA) -> usize;
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,11 @@ function Check([string]$name, [scriptblock]$assert) {
 Add-Type -Namespace Native -Name User32 -MemberDefinition '
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
 [StructLayout(LayoutKind.Sequential)] public struct APPBARDATA { public int cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public IntPtr lParam; }
+[StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
+[StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+[DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+[DllImport("user32.dll")] public static extern bool GetMonitorInfoW(IntPtr hMon, ref MONITORINFO mi);
+[DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
@@ -108,23 +113,35 @@ try {
     Check 'window class JinJuApp exists' { $hwnd -ne [IntPtr]::Zero }
     Check 'window is visible' { [Native.User32]::IsWindowVisible($hwnd) }
 
-    # 3b. position: for a normally docked bottom taskbar the strip must
-    # sit inside the taskbar band (screen corner anchor, v1 parity), not
-    # floating above it - regression guard for the placement math.
+    # 3b. position: the strip is anchored to the bottom-right corner of the
+    # monitor work area, so it clears the taskbar whatever edge the bar is
+    # docked to - regression guard for "the strip covers my taskbar icons".
     $wr = New-Object Native.User32+RECT
     [Native.User32]::GetWindowRect($hwnd, [ref]$wr) | Out-Null
     $abd = New-Object Native.User32+APPBARDATA
     $abd.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][Native.User32+APPBARDATA])
     [Native.User32]::SHAppBarMessage(5, [ref]$abd) | Out-Null  # ABM_GETTASKBARPOS
-    if (($abd.uEdge -eq 3) -and (($abd.rc.bottom - $abd.rc.top) -ge 40)) {
-        Check 'strip sits inside the bottom taskbar band (v1 parity)' {
-            ($wr.bottom -gt $abd.rc.top) -and ($wr.bottom -le $abd.rc.bottom)
-        }
-        Check 'strip anchors to the left edge of the screen' {
-            ($wr.left -ge 0) -and ($wr.left -le 30)
+    $abdState = New-Object Native.User32+APPBARDATA
+    $abdState.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][Native.User32+APPBARDATA])
+    $barState = [Native.User32]::SHAppBarMessage(4, [ref]$abdState)  # ABM_GETSTATE
+    $mi = New-Object Native.User32+MONITORINFO
+    $mi.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][Native.User32+MONITORINFO])
+    $pt = New-Object Native.User32+POINT
+    [Native.User32]::GetMonitorInfoW([Native.User32]::MonitorFromPoint($pt, 1), [ref]$mi) | Out-Null
+    $margin = [int][Math]::Round(10 * [Native.User32]::GetDpiForWindow($hwnd) / 96.0)
+    Check 'strip anchors to the bottom-right of the work area' {
+        ([Math]::Abs($wr.right - ($mi.rcWork.right - $margin)) -le 2) -and
+        ([Math]::Abs($wr.bottom - ($mi.rcWork.bottom - $margin)) -le 2)
+    }
+    if (($barState -band 1) -eq 0) {
+        # Not auto-hidden: the bar owns a reserved band, so the strip must
+        # stay entirely outside that rectangle.
+        Check 'strip never overlaps the taskbar' {
+            ($wr.left -ge $abd.rc.right) -or ($wr.right -le $abd.rc.left) -or
+            ($wr.top -ge $abd.rc.bottom) -or ($wr.bottom -le $abd.rc.top)
         }
     } else {
-        Write-Output "SKIP : taskbar not bottom-docked (edge=$($abd.uEdge)); position check not applicable"
+        Write-Output "SKIP : taskbar is auto-hidden; overlap check not applicable"
     }
 
     # 4. autostart is opt-in: running the app must not create or modify
@@ -148,7 +165,7 @@ try {
 
     # --- phase B: marquee + z-order regression guards ----------------------
     # A single ASCII quote far wider than the 470 px resting width forces
-    # the scroll state machine (13 pt UI font puts this at ~900 px).
+    # the scroll state machine (14 pt Microsoft YaHei UI puts this at ~950 px).
     $longQuote = 'The quick brown fox jumps over the lazy dog 0123456789 ' +
                  'and keeps running far beyond the edge of the strip ABCDEF'
     Set-Content -Path $exported -Encoding Ascii -Value ('[{"quote":"' + $longQuote + '"}]')

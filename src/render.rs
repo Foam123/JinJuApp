@@ -15,8 +15,16 @@ use crate::win32::*;
 pub const COLOR: (u8, u8, u8) = (30, 30, 30);
 pub const MAX_ALPHA: u8 = 217; // 0.85 * 255
 
-/// Font size in points (the original app used 13 pt).
-const FONT_PT: i32 = 13;
+/// The strip's typeface: the standard Simplified-Chinese UI face, Regular
+/// weight. The previous build inherited the system message font at Light
+/// (300) weight, whose hairline CJK strokes read as washed-out and blurry
+/// against a wallpaper at this size; Regular restores normal stroke weight.
+/// GDI substitutes a system face if this one is missing, so older or
+/// font-reduced installs still render.
+const FONT_FACE: &str = "Microsoft YaHei UI";
+/// Font size in points. The strip is 45 logical px tall, so 14 pt fills
+/// it comfortably (13 pt looked cramped next to the 14 px system UI text).
+const FONT_PT: i32 = 14;
 
 fn scale(c: u8, a: u8) -> u8 {
     ((u32::from(c) * u32::from(a) + 127) / 255) as u8
@@ -46,8 +54,21 @@ pub fn accumulate_layer(
     }
 }
 
-/// System UI font (Microsoft YaHei UI on zh-CN, Segoe UI elsewhere) at
-/// `FONT_PT` points for the given DPI — no hard-coded typeface name.
+/// Write `face` into a `LOGFONTW` name field: UTF-16, NUL-terminated,
+/// at most 31 units plus the terminator (the field is `[u16; 32]`).
+/// Pure — the truncation contract is unit-tested.
+fn set_face_name(lf: &mut LOGFONTW, face: &str) {
+    lf.lfFaceName = [0; 32];
+    for (slot, unit) in lf.lfFaceName.iter_mut().zip(face.encode_utf16().take(31)) {
+        *slot = unit;
+    }
+}
+
+/// `FONT_FACE` at `FONT_PT` points for the given DPI, Regular weight.
+///
+/// The charset and pitch still come from the system message font, so a
+/// non-Chinese locale keeps its own mapping when GDI substitutes a face;
+/// only the face, weight and size are ours.
 unsafe fn create_font(dpi: u32) -> HFONT {
     unsafe {
         let mut ncm: NONCLIENTMETRICSW = core::mem::zeroed();
@@ -65,10 +86,11 @@ unsafe fn create_font(dpi: u32) -> HFONT {
         };
         // Negative height = character height; points → pixels at this DPI.
         lf.lfHeight = -MulDiv(FONT_PT, dpi as i32, 72);
-        lf.lfWeight = FW_LIGHT;
+        lf.lfWeight = FW_NORMAL;
         // Grayscale AA: ClearType assumes an opaque destination and would
         // produce colored fringes on a per-pixel-alpha surface.
         lf.lfQuality = ANTIALIASED_QUALITY;
+        set_face_name(&mut lf, FONT_FACE);
         CreateFontIndirectW(&lf)
     }
 }
@@ -337,6 +359,32 @@ mod tests {
         let mut frame = [0u8, 0, 0, 0, 7, 7];
         accumulate_layer(&mask, &mut frame, COLOR, MAX_ALPHA, 255);
         assert_eq!(&frame[4..], &[7, 7]);
+    }
+
+    #[test]
+    fn face_name_is_utf16_and_nul_terminated() {
+        let mut lf: LOGFONTW = unsafe { core::mem::zeroed() };
+        set_face_name(&mut lf, FONT_FACE);
+        let units: Vec<u16> = lf
+            .lfFaceName
+            .iter()
+            .copied()
+            .take_while(|&u| u != 0)
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), FONT_FACE);
+        assert_eq!(
+            lf.lfFaceName[FONT_FACE.len()],
+            0,
+            "terminated right after the face"
+        );
+    }
+
+    #[test]
+    fn face_name_truncates_to_the_field() {
+        let mut lf: LOGFONTW = unsafe { core::mem::zeroed() };
+        set_face_name(&mut lf, &"X".repeat(40));
+        assert_eq!(lf.lfFaceName[..31], [u16::from(b'X'); 31]);
+        assert_eq!(lf.lfFaceName[31], 0, "the 32nd unit is reserved for NUL");
     }
 
     #[test]
