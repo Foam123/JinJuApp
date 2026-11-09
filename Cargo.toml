@@ -4,7 +4,7 @@ version = "2.3.0"
 edition = "2024"
 description = "A taskbar-side quote ticker for Windows"
 license = "MIT"
-repository = "https://github.com/31i45/JinJuApp"
+repository = "https://github.com/Foam123/JinJuApp"
 build = "build.rs"
 
 [dependencies]

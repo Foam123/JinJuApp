@@ -6,7 +6,7 @@ v2.0.0 起为纯 Rust + Win32 原生实现（原为 Python/PyQt，见文末「�
 
 ## 使用
 
-1. 从 [Releases](https://github.com/31i45/JinJuApp/releases) 下载 `JinJuApp.exe`，放入任意可写目录；
+1. 从 [Releases](https://github.com/Foam123/JinJuApp/releases) 下载 `JinJuApp.exe`，放入任意可写目录；
 2. 双击运行：金句条出现在屏幕右下角的任务栏带上（通知区域左侧），托盘出现图标；
 3. **换内容**：托盘右键 →「编辑金句」，或直接编辑 exe 旁的 `quotes.json`；
 4. **换字体**：编辑 exe 旁的 `settings.json`（字体 / 字重 / 字号 / 颜色 / 不透明度），重启应用生效；
