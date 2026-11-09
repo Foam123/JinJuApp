@@ -111,8 +111,15 @@ pub struct Surface {
 
 impl Surface {
     /// Create a surface of `width` × `height` px at `dpi`, drawing with
-    /// the typeface described by `style`.
-    pub fn new(width: i32, height: i32, dpi: u32, style: &Settings) -> Option<Surface> {
+    /// the typeface and colour described by `style`; `light_theme` resolves
+    /// a `color: auto` against the taskbar's light/dark mode.
+    pub fn new(
+        width: i32,
+        height: i32,
+        dpi: u32,
+        style: &Settings,
+        light_theme: bool,
+    ) -> Option<Surface> {
         if width <= 0 || height <= 0 {
             return None;
         }
@@ -158,7 +165,7 @@ impl Surface {
                 bits: bits as *mut u8,
                 frame: vec![0; (width as usize) * (height as usize) * 4],
                 font,
-                color: style.rgb(),
+                color: style.rgb(light_theme),
                 alpha: style.alpha(),
                 old_bmp,
                 old_font,
@@ -430,7 +437,7 @@ mod tests {
     /// strip's right edge, where the tail arrives during the slide.
     #[test]
     fn draw_renders_tail_when_origin_is_negative() {
-        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default(), true).expect("GDI surface");
         // ~120 ASCII chars ≈ 800 px wide at 13 pt — far wider than 500.
         let text = "The quick brown fox jumps over the lazy dog and keeps \
                     running far beyond the edge of the strip ABCDEFGHIJKL \
@@ -459,7 +466,7 @@ mod tests {
     /// test hard-coding any one font's pixel metrics.
     #[test]
     fn measure_cjk_long_quote_overflows_strip() {
-        let s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
+        let s = Surface::new(500, 36, 96, &Settings::default(), true).expect("GDI surface");
         let q = "翻山越岭只为一场遇见，全力以赴只为一次改变。答案就在眼泪里，\
                  也凝结在汗水中、感官和心灵。";
         let ascii = "abcdefghijklmnopqrstuvwxyz0123456789abcdefgh";
@@ -479,7 +486,7 @@ mod tests {
     /// The symmetric half: with the origin at rest the head is visible.
     #[test]
     fn draw_renders_head_at_rest() {
-        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default(), true).expect("GDI surface");
         s.draw(&[("金句", 15, 1.0)]);
         let (w, h) = (s.width as usize, s.height as usize);
         let buf = s.bits_mut();
@@ -497,7 +504,7 @@ mod tests {
     /// Two layers at different positions and opacities must both leave ink.
     #[test]
     fn draw_blends_two_layers() {
-        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default(), true).expect("GDI surface");
         s.draw(&[("金句", 15, 0.5), ("金句", 200, 0.5)]);
         let (w, h) = (s.width as usize, s.height as usize);
         let buf = s.bits_mut();
@@ -522,7 +529,7 @@ mod tests {
     /// A layer with zero alpha is a complete no-op.
     #[test]
     fn draw_zero_alpha_leaves_no_ink() {
-        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default(), true).expect("GDI surface");
         s.draw(&[("金句", 15, 0.0)]);
         let buf = s.bits_mut();
         assert!(
@@ -535,7 +542,7 @@ mod tests {
     /// opaque default, a half-alpha layer leaves roughly half the ink.
     #[test]
     fn draw_half_alpha_scales_ink() {
-        let mut s = Surface::new(500, 36, 96, &Settings::default()).expect("GDI surface");
+        let mut s = Surface::new(500, 36, 96, &Settings::default(), true).expect("GDI surface");
         s.draw(&[("金句", 15, 0.5)]);
         let buf = s.bits_mut();
         let max_a = buf.iter().skip(3).step_by(4).copied().max().unwrap_or(0);

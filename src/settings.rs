@@ -24,12 +24,16 @@ pub const DEFAULT_WEIGHT: i32 = 400;
 /// Default size in points: matches the taskbar's own text height
 /// (16 px em at 96 DPI).
 pub const DEFAULT_PT: i32 = 11;
-/// Default text colour: the taskbar's text is pure black.
-pub const DEFAULT_COLOR: &str = "#000000";
+/// Default text colour: `auto` follows the taskbar's light/dark theme
+/// (black text on a light bar, white on a dark one). A literal `#RRGGBB`
+/// or `#RGB` pins the colour instead.
+pub const DEFAULT_COLOR: &str = "auto";
+/// Colour used when `color` is `auto` and the taskbar is in light mode.
+pub const AUTO_COLOR_LIGHT: (u8, u8, u8) = (0, 0, 0);
+/// Colour used when `color` is `auto` and the taskbar is in dark mode.
+pub const AUTO_COLOR_DARK: (u8, u8, u8) = (255, 255, 255);
 /// Default text opacity: fully opaque, like the taskbar's text.
 pub const DEFAULT_OPACITY: f64 = 1.0;
-/// `DEFAULT_COLOR` in RGB, kept in sync by a unit test.
-const DEFAULT_RGB: (u8, u8, u8) = (0, 0, 0);
 
 /// `LOGFONTW::lfFaceName` is `[u16; 32]`: 31 units plus the terminator.
 const MAX_FACE_UNITS: usize = 31;
@@ -68,10 +72,19 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// RGB triple for the configured colour (always valid after
-    /// [`sanitized`](Settings::sanitized)).
-    pub fn rgb(&self) -> (u8, u8, u8) {
-        parse_color(&self.color).unwrap_or(DEFAULT_RGB)
+    /// RGB triple for the configured colour. `auto` resolves against the
+    /// taskbar's theme (`light` = Windows light mode); a literal colour is
+    /// returned as-is. Always valid after
+    /// [`sanitized`](Settings::sanitized).
+    pub fn rgb(&self, light: bool) -> (u8, u8, u8) {
+        if self.color.eq_ignore_ascii_case("auto") {
+            return if light {
+                AUTO_COLOR_LIGHT
+            } else {
+                AUTO_COLOR_DARK
+            };
+        }
+        parse_color(&self.color).unwrap_or(AUTO_COLOR_LIGHT)
     }
 
     /// Text opacity as the 0–255 alpha byte the blender uses.
@@ -100,9 +113,9 @@ impl Settings {
             self.weight = DEFAULT_WEIGHT;
         }
         let color = self.color.trim().to_string();
-        if parse_color(&color).is_none() {
+        if parse_color(&color).is_none() && !color.eq_ignore_ascii_case("auto") {
             problems.push(format!(
-                "color 需为 #RRGGBB 或 #RGB，收到 \"{}\"",
+                "color 需为 auto、#RRGGBB 或 #RGB，收到 \"{}\"",
                 self.color
             ));
             self.color = DEFAULT_COLOR.to_string();
@@ -235,17 +248,29 @@ mod tests {
         assert_eq!(d.font, DEFAULT_FACE);
         assert_eq!(d.weight, 400);
         assert_eq!(d.size, 11);
-        assert_eq!(d.color, DEFAULT_COLOR);
+        assert_eq!(d.color, "auto");
         assert_eq!(d.opacity, 1.0);
-        assert_eq!(d.rgb(), DEFAULT_RGB);
+        assert!(d.color.eq_ignore_ascii_case("auto"));
         assert_eq!(d.alpha(), 255);
+    }
+
+    #[test]
+    fn auto_colour_follows_the_taskbar_theme() {
+        let d = Settings::default();
+        assert_eq!(d.rgb(true), AUTO_COLOR_LIGHT, "light bar -> black text");
+        assert_eq!(d.rgb(false), AUTO_COLOR_DARK, "dark bar -> white text");
+        // An explicit colour ignores the theme.
+        let pinned = parse(r##"{"color":"#1E1E1E"}"##).unwrap();
+        assert_eq!(pinned.rgb(true), (30, 30, 30));
+        assert_eq!(pinned.rgb(false), (30, 30, 30));
+        assert!(!pinned.color.eq_ignore_ascii_case("auto"));
     }
 
     #[test]
     fn parse_color_accepts_short_and_long_forms() {
         assert_eq!(parse_color("#000000"), Some((0, 0, 0)));
         assert_eq!(parse_color("#FFFFFF"), Some((255, 255, 255)));
-        assert_eq!(parse_color(DEFAULT_COLOR), Some(DEFAULT_RGB));
+        assert_eq!(parse_color("auto"), None, "auto is not a colour literal");
         assert_eq!(parse_color("#1E1E1E"), Some((30, 30, 30)));
         assert_eq!(parse_color("#FFF"), Some((255, 255, 255)));
         assert_eq!(parse_color("#08f"), Some((0, 136, 255)));
@@ -273,7 +298,7 @@ mod tests {
         let (s, note) = parse(r##"{"color":"#000","opacity":1.0}"##)
             .unwrap()
             .sanitized();
-        assert_eq!(s.rgb(), (0, 0, 0));
+        assert_eq!(s.rgb(true), (0, 0, 0));
         assert_eq!(s.alpha(), 255);
         assert!(note.is_none());
     }

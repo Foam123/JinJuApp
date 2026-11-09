@@ -47,6 +47,7 @@ pub fn place(
     work: &Rect,
     monitor: &Rect,
     tray: Option<Rect>,
+    obstacle: Option<Rect>,
     win_w: i32,
     win_h: i32,
     margin: i32,
@@ -70,7 +71,15 @@ pub fn place(
         Some(t) if t.top + 1 >= area.bottom && t.left > area.left => Some(t),
         _ => None,
     };
-    let x_limit = tray_in_band.map_or(area.right, |t| t.left);
+    let mut x_limit = tray_in_band.map_or(area.right, |t| t.left);
+    // Step over an in-band obstacle (the TrafficMonitor taskbar window) when
+    // the strip would land on it and can fit entirely to its left.
+    if let Some(ob) = obstacle.filter(|o| o.top + 1 >= area.bottom && o.left > area.left) {
+        let overlaps = x_limit - margin - win_w < ob.right && x_limit > ob.left;
+        if overlaps && ob.left - margin - win_w >= area.left + margin {
+            x_limit = ob.left;
+        }
+    }
     let x = (x_limit - margin - win_w).max(area.left + margin);
     let y = match (band, tray_in_band) {
         (Some(b), Some(_)) if b.height() >= win_h => b.top + (b.height() - win_h) / 2,
@@ -113,7 +122,7 @@ mod tests {
 
     #[test]
     fn strip_is_drawn_inside_the_band_and_left_of_the_tray() {
-        let r = place(&BOTTOM_WORK, &MON, Some(BOTTOM_TRAY), 500, 45, MARGIN);
+        let r = place(&BOTTOM_WORK, &MON, Some(BOTTOM_TRAY), None, 500, 45, MARGIN);
         // Band 1552..1600 is 48 px tall, the strip is 45: centred at 1553.
         assert_eq!(r, Rect::new(3016, 1553, 500, 45));
         assert!(r.top >= BOTTOM_WORK.bottom, "inside the bar band");
@@ -123,7 +132,7 @@ mod tests {
 
     #[test]
     fn missing_notification_area_floats_above_the_bar() {
-        let r = place(&BOTTOM_WORK, &MON, None, 500, 45, MARGIN);
+        let r = place(&BOTTOM_WORK, &MON, None, None, 500, 45, MARGIN);
         assert_eq!(r, Rect::new(3330, 1497, 500, 45));
         assert!(r.bottom <= BOTTOM_WORK.bottom, "clear of the bar");
     }
@@ -143,7 +152,7 @@ mod tests {
             right: 48,
             bottom: 1600,
         };
-        let r = place(&work, &MON, Some(tray), 500, 45, MARGIN);
+        let r = place(&work, &MON, Some(tray), None, 500, 45, MARGIN);
         assert_eq!(r, Rect::new(3330, 1545, 500, 45));
         assert!(r.left >= work.left);
     }
@@ -168,7 +177,7 @@ mod tests {
             right: 1920,
             bottom: 48,
         };
-        let r = place(&work, &mon, Some(tray), 500, 45, MARGIN);
+        let r = place(&work, &mon, Some(tray), None, 500, 45, MARGIN);
         assert_eq!(r, Rect::new(1410, 1025, 500, 45));
         assert!(r.top >= work.top);
     }
@@ -189,7 +198,7 @@ mod tests {
             right: 1920,
             bottom: 1080,
         };
-        let r = place(&mon, &mon, Some(tray), 500, 45, MARGIN);
+        let r = place(&mon, &mon, Some(tray), None, 500, 45, MARGIN);
         assert_eq!(r, Rect::new(1410, 1025, 500, 45));
     }
 
@@ -201,7 +210,7 @@ mod tests {
             right: 0,
             bottom: 0,
         };
-        let r = place(&work, &MON, None, 500, 45, MARGIN);
+        let r = place(&work, &MON, None, None, 500, 45, MARGIN);
         assert_eq!(r, Rect::new(3330, 1545, 500, 45));
     }
 
@@ -227,7 +236,7 @@ mod tests {
             right: 600,
             bottom: 848,
         };
-        let r = place(&work, &mon, Some(tray), 500, 45, MARGIN);
+        let r = place(&work, &mon, Some(tray), None, 500, 45, MARGIN);
         assert_eq!(r.left, MARGIN, "clamped to the left margin, not negative");
     }
 
@@ -253,9 +262,98 @@ mod tests {
             right: 800,
             bottom: 772,
         };
-        let r = place(&work, &mon, Some(tray), 500, 45, MARGIN);
+        let r = place(&work, &mon, Some(tray), None, 500, 45, MARGIN);
         assert_eq!(r.top, 742);
         assert_eq!(r.right, 690, "still stops left of the tray");
+    }
+
+    #[test]
+    fn steps_left_of_an_obstacle_in_the_band() {
+        // TrafficMonitor's taskbar window sits just left of the tray.
+        let obstacle = Rect {
+            left: 3110,
+            top: 1552,
+            right: 3510,
+            bottom: 1598,
+        };
+        let r = place(
+            &BOTTOM_WORK,
+            &MON,
+            Some(BOTTOM_TRAY),
+            Some(obstacle),
+            500,
+            45,
+            MARGIN,
+        );
+        assert_eq!(r.right, 3100, "right edge stops at the obstacle's left");
+        assert!(r.right <= obstacle.left);
+        assert_eq!(r.top, 1553, "still centred in the band");
+    }
+
+    #[test]
+    fn ignores_an_obstacle_the_strip_does_not_reach() {
+        // A narrow obstacle tucked against the far left: the strip's slot
+        // (3016..3516) never touches it, so the tray stays the limit.
+        let obstacle = Rect {
+            left: 120,
+            top: 1552,
+            right: 420,
+            bottom: 1598,
+        };
+        let r = place(
+            &BOTTOM_WORK,
+            &MON,
+            Some(BOTTOM_TRAY),
+            Some(obstacle),
+            500,
+            45,
+            MARGIN,
+        );
+        assert_eq!(r, Rect::new(3016, 1553, 500, 45));
+    }
+
+    #[test]
+    fn keeps_the_tray_limit_when_there_is_no_room_left_of_the_obstacle() {
+        // Obstacle so close to the left edge that a 500 px strip cannot fit
+        // to its left: fall back to the tray limit rather than going off
+        // screen or clamping into the obstacle.
+        let obstacle = Rect {
+            left: 300,
+            top: 1552,
+            right: 700,
+            bottom: 1598,
+        };
+        let r = place(
+            &BOTTOM_WORK,
+            &MON,
+            Some(BOTTOM_TRAY),
+            Some(obstacle),
+            500,
+            45,
+            MARGIN,
+        );
+        assert_eq!(r.right, BOTTOM_TRAY.left - MARGIN);
+    }
+
+    #[test]
+    fn ignores_an_obstacle_outside_the_band() {
+        // A window above the taskbar must not affect the slot.
+        let obstacle = Rect {
+            left: 3110,
+            top: 1000,
+            right: 3510,
+            bottom: 1500,
+        };
+        let r = place(
+            &BOTTOM_WORK,
+            &MON,
+            Some(BOTTOM_TRAY),
+            Some(obstacle),
+            500,
+            45,
+            MARGIN,
+        );
+        assert_eq!(r, Rect::new(3016, 1553, 500, 45));
     }
 
     #[test]

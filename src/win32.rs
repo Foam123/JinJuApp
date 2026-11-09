@@ -292,6 +292,7 @@ pub const KEY_READ: u32 = 0x0002_0019;
 // fail the DACL check with ERROR_ACCESS_DENIED.
 pub const KEY_SET_VALUE: u32 = 0x0002;
 pub const REG_SZ: u32 = 1;
+pub const REG_DWORD: u32 = 4;
 
 // ---------------------------------------------------------------------------
 // kernel32

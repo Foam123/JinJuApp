@@ -150,6 +150,21 @@ try {
             }
         }
     }
+    # The TrafficMonitor taskbar window (when that app runs) is an obstacle
+    # the strip steps over, so it becomes the right limit instead.
+    if ($trayWnd -ne [IntPtr]::Zero) {
+        $tmWnd = [Native.User32]::FindWindowExW($trayWnd, [IntPtr]::Zero, [NullString]::Value, 'TrafficMonitorTaskbarWindow')
+        if ($tmWnd -ne [IntPtr]::Zero) {
+            $tr = New-Object Native.User32+RECT
+            [Native.User32]::GetWindowRect($tmWnd, [ref]$tr) | Out-Null
+            $winW = $wr.right - $wr.left
+            $wouldOverlap = (($limit - $margin - $winW) -lt $tr.right) -and ($limit -gt $tr.left)
+            $fits = (($tr.left - $margin - $winW) -ge ($mi.rcWork.left + $margin))
+            if ((($tr.top + 1) -ge $bandTop) -and ($tr.left -gt $mi.rcWork.left) -and $wouldOverlap -and $fits) {
+                $limit = $tr.left
+            }
+        }
+    }
     Check 'strip ends left of the notification area' {
         [Math]::Abs($wr.right - ($limit - $margin)) -le 2
     }

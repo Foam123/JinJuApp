@@ -110,14 +110,24 @@ struct App {
     placed: Option<(i32, i32)>,
     /// Typeface settings from `settings.json`, reused when the DPI changes.
     style: Settings,
+    /// Windows light-mode flag, resolved into `color: auto` and refreshed
+    /// when the taskbar theme changes.
+    light: bool,
     exe_path: String,
 }
 
 impl App {
-    fn new(hwnd: HWND, dpi: u32, quotes: Source, style: Settings, exe_path: String) -> Option<App> {
+    fn new(
+        hwnd: HWND,
+        dpi: u32,
+        quotes: Source,
+        style: Settings,
+        light: bool,
+        exe_path: String,
+    ) -> Option<App> {
         let win_w = scale_pt(WINDOW_W, dpi);
         let win_h = scale_pt(WINDOW_H, dpi);
-        let surface = Surface::new(win_w, win_h, dpi, &style)?;
+        let surface = Surface::new(win_w, win_h, dpi, &style, light)?;
         let bag = Bag::new(quotes.lines().len());
         let speed_px_per_s = SCROLL_SPEED_LOGICAL * dpi as f32 / 96.0;
         Some(App {
@@ -137,6 +147,7 @@ impl App {
             transition: None,
             placed: None,
             style,
+            light,
             exe_path,
         })
     }
@@ -278,6 +289,7 @@ impl App {
             &work,
             &monitor,
             notification_area(),
+            traffic_monitor_window(),
             self.win_w,
             self.win_h,
             PLACE_MARGIN,
@@ -291,6 +303,22 @@ impl App {
         }
     }
 
+    /// Re-resolve `color: auto` against the taskbar's light/dark mode.
+    ///
+    /// Called on WM_SETTINGCHANGE, which is also how Windows broadcasts a
+    /// theme switch. Only a real change rebuilds the surface.
+    fn follow_theme(&mut self) {
+        let light = system_uses_light_theme();
+        if light == self.light {
+            return;
+        }
+        self.light = light;
+        if let Some(surface) = Surface::new(self.win_w, self.win_h, self.dpi, &self.style, light) {
+            self.surface = surface;
+            self.refresh();
+        }
+    }
+
     /// DPI changed (window moved between monitors): rebuild at new size.
     fn on_dpi_changed(&mut self, dpi: u32) {
         let Some(surface) = Surface::new(
@@ -298,6 +326,7 @@ impl App {
             scale_pt(WINDOW_H, dpi),
             dpi,
             &self.style,
+            self.light,
         ) else {
             return;
         };
@@ -333,6 +362,67 @@ fn crossfade_alpha(elapsed_ms: u64) -> f32 {
 /// Logical px @ 96 DPI → physical px at `dpi`.
 fn scale_pt(v: i32, dpi: u32) -> i32 {
     ((i64::from(v) * i64::from(dpi) + 95) / 96) as i32
+}
+
+/// Windows light-mode flag for the taskbar
+/// (`HKCU\...\Themes\Personalize\SystemUsesLightTheme`). Missing or
+/// unreadable values mean light, the Windows default.
+fn system_uses_light_theme() -> bool {
+    const KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+    const VALUE: &str = "SystemUsesLightTheme";
+    unsafe {
+        let sub = widez(KEY);
+        let name = widez(VALUE);
+        let mut hkey: HKEY = core::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, sub.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+            return true;
+        }
+        let mut data = [0u8; 4];
+        let mut size: u32 = data.len() as u32;
+        let mut ty: u32 = 0;
+        let ok = RegQueryValueExW(
+            hkey,
+            name.as_ptr(),
+            core::ptr::null_mut(),
+            &mut ty,
+            data.as_mut_ptr(),
+            &mut size,
+        );
+        RegCloseKey(hkey);
+        if ok != 0 || ty != REG_DWORD || size < 4 {
+            return true;
+        }
+        u32::from_le_bytes(data) != 0
+    }
+}
+
+/// The TrafficMonitor taskbar window, when that app is running.
+///
+/// TrafficMonitor parents its strip to the taskbar and titles it
+/// `TrafficMonitorTaskbarWindow`, so it is a child of `Shell_TrayWnd`
+/// rather than a top-level window. It is only an obstacle: the gold strip
+/// steps to its left when there is room.
+fn traffic_monitor_window() -> Option<Rect> {
+    unsafe {
+        let tray = FindWindowW(widez("Shell_TrayWnd").as_ptr(), core::ptr::null());
+        if tray.is_null() {
+            return None;
+        }
+        let window = FindWindowExW(
+            tray,
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            widez("TrafficMonitorTaskbarWindow").as_ptr(),
+        );
+        if window.is_null() {
+            return None;
+        }
+        let mut r: RECT = core::mem::zeroed();
+        if GetWindowRect(window, &mut r) == 0 {
+            return None;
+        }
+        Some(Rect::from(r))
+    }
 }
 
 /// The shell's notification-area container (`TrayNotifyWnd`) in screen
@@ -457,6 +547,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM
             }
             WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
                 let Some(app) = app_of(hwnd) else { return 0 };
+                // Theme switches arrive here too; this is what keeps the
+                // text readable when the taskbar flips to dark mode.
+                app.follow_theme();
                 app.reposition();
                 0
             }
@@ -623,7 +716,15 @@ fn main() {
         TASKBAR_CREATED.get_or_init(|| RegisterWindowMessageW(widez("TaskbarCreated").as_ptr()));
 
         let dpi = primary_dpi();
-        let app = match App::new(core::ptr::null_mut(), dpi, quotes, style, exe.clone()) {
+        let light = system_uses_light_theme();
+        let app = match App::new(
+            core::ptr::null_mut(),
+            dpi,
+            quotes,
+            style,
+            light,
+            exe.clone(),
+        ) {
             Some(a) => a,
             None => {
                 alert(core::ptr::null_mut(), "初始化渲染表面失败");
