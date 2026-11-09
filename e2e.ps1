@@ -24,6 +24,7 @@ Add-Type -Namespace Native -Name User32 -MemberDefinition '
 [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
 [DllImport("user32.dll")] public static extern bool GetMonitorInfoW(IntPtr hMon, ref MONITORINFO mi);
 [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
+[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string cls, string title);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
@@ -129,8 +130,20 @@ try {
     $pt = New-Object Native.User32+POINT
     [Native.User32]::GetMonitorInfoW([Native.User32]::MonitorFromPoint($pt, 1), [ref]$mi) | Out-Null
     $margin = [int][Math]::Round(10 * [Native.User32]::GetDpiForWindow($hwnd) / 96.0)
-    Check 'strip anchors to the bottom-right of the work area' {
-        ([Math]::Abs($wr.right - ($mi.rcWork.right - $margin)) -le 2) -and
+    # The notification area (chevron, tray icons, clock) is the right limit
+    # when it lives in a bottom band; otherwise the work area's edge is.
+    $limit = $mi.rcWork.right
+    $trayWnd = [Native.User32]::FindWindowW('Shell_TrayWnd', [NullString]::Value)
+    if ($trayWnd -ne [IntPtr]::Zero) {
+        $notify = [Native.User32]::FindWindowExW($trayWnd, [IntPtr]::Zero, 'TrayNotifyWnd', [NullString]::Value)
+        if ($notify -ne [IntPtr]::Zero) {
+            $nr = New-Object Native.User32+RECT
+            [Native.User32]::GetWindowRect($notify, [ref]$nr) | Out-Null
+            if ((($nr.top + 1) -ge $mi.rcWork.bottom) -and ($nr.left -gt $mi.rcWork.left)) { $limit = $nr.left }
+        }
+    }
+    Check 'strip stops left of the notification area' {
+        ([Math]::Abs($wr.right - ($limit - $margin)) -le 2) -and
         ([Math]::Abs($wr.bottom - ($mi.rcWork.bottom - $margin)) -le 2)
     }
     if (($barState -band 1) -eq 0) {

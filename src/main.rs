@@ -253,16 +253,26 @@ impl App {
         }
     }
 
-    /// Move the strip to the bottom-right corner of the usable desktop.
+    /// Move the strip to the bottom-right corner of the usable desktop,
+    /// stopping to the left of the notification area.
     ///
     /// Anchored to the work area, so the taskbar — whatever edge it is
     /// docked to — can never be covered, and the strip stays on the right
     /// side where it does not collide with the bar's own left-hand icons.
+    /// The notification area (chevron, tray icons, clock) is the right
+    /// limit, so the quote never hangs over it either.
     fn reposition(&mut self) {
         let Some((monitor, work)) = desktop_geometry() else {
             return;
         };
-        let r = geometry::place(&work, &monitor, self.win_w, self.win_h, PLACE_MARGIN);
+        let r = geometry::place(
+            &work,
+            &monitor,
+            notification_area(),
+            self.win_w,
+            self.win_h,
+            PLACE_MARGIN,
+        );
         unsafe {
             MoveWindow(self.hwnd, r.left, r.top, self.win_w, self.win_h, 0);
         }
@@ -306,6 +316,35 @@ fn crossfade_alpha(elapsed_ms: u64) -> f32 {
 /// Logical px @ 96 DPI → physical px at `dpi`.
 fn scale_pt(v: i32, dpi: u32) -> i32 {
     ((i64::from(v) * i64::from(dpi) + 95) / 96) as i32
+}
+
+/// The shell's notification-area container (`TrayNotifyWnd`) in screen
+/// coordinates, when the shell exposes it.
+///
+/// It is a child of `Shell_TrayWnd`; its left edge is where the clock, IME
+/// indicator, tray icons and hidden-icon chevron begin. `None` means the
+/// strip simply uses the work area's right edge.
+fn notification_area() -> Option<Rect> {
+    unsafe {
+        let tray = FindWindowW(widez("Shell_TrayWnd").as_ptr(), core::ptr::null());
+        if tray.is_null() {
+            return None;
+        }
+        let notify = FindWindowExW(
+            tray,
+            core::ptr::null_mut(),
+            widez("TrayNotifyWnd").as_ptr(),
+            core::ptr::null(),
+        );
+        if notify.is_null() {
+            return None;
+        }
+        let mut r: RECT = core::mem::zeroed();
+        if GetWindowRect(notify, &mut r) == 0 {
+            return None;
+        }
+        Some(Rect::from(r))
+    }
 }
 
 /// Primary monitor rect + its work area (the desktop minus the taskbar).
